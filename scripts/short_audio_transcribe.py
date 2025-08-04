@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parent_dir = "./custom_character_voice/"
     speaker_names = list(os.walk(parent_dir))[0][1]
     speaker_annos = []
-    total_files = sum([len(files) for r, d, files in os.walk(parent_dir)])
+    total_files = sum([len([f for f in files if not f.startswith("processed_") and f.endswith(".wav")]) for r, d, files in os.walk(parent_dir)])
     # resample audios
     # 2023/4/21: Get the target sampling rate
     with open("./configs/finetune_speaker.json", 'r', encoding='utf-8') as f:
@@ -65,9 +65,14 @@ if __name__ == "__main__":
     target_sr = hps['data']['sampling_rate']
     processed_files = 0
     for speaker in speaker_names:
-        for i, wavfile in enumerate(list(os.walk(parent_dir + speaker))[0][2]):
+        for i, wavfile in enumerate([f for f in list(os.walk(parent_dir + speaker))[0][2] if not f.startswith("processed_") and f.endswith(".wav")]):
             # try to load file as audio
-            if wavfile.startswith("processed_"):
+            save_path = parent_dir + speaker + "/" + f"processed_{i}.wav"
+            # Skip if processed file already exists
+            if os.path.exists(save_path):
+                print(f"Skipping {wavfile}, processed file {save_path} already exists")
+                processed_files += 1
+                print(f"Processed: {processed_files}/{total_files}")
                 continue
             try:
                 wav, sr = torchaudio.load(parent_dir + speaker + "/" + wavfile, frame_offset=0, num_frames=-1, normalize=True,
@@ -77,7 +82,7 @@ if __name__ == "__main__":
                     wav = torchaudio.transforms.Resample(orig_freq=sr, new_freq=target_sr)(wav)
                 if wav.shape[1] / sr > 20:
                     print(f"{wavfile} too long, ignoring\n")
-                save_path = parent_dir + speaker + "/" + f"processed_{i}.wav"
+                    continue
                 torchaudio.save(save_path, wav, target_sr, channels_first=True)
                 # transcribe text
                 lang, text = transcribe_one(save_path)
