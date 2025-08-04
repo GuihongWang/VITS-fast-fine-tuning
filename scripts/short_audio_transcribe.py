@@ -66,15 +66,17 @@ if __name__ == "__main__":
     processed_files = 0
     for speaker in speaker_names:
         for i, wavfile in enumerate([f for f in list(os.walk(parent_dir + speaker))[0][2] if not f.startswith("processed_") and f.endswith(".wav")]):
-            # try to load file as audio
-            save_path = parent_dir + speaker + "/" + f"processed_{i}.wav"
-            # Skip if processed file already exists
-            if os.path.exists(save_path):
-                print(f"Skipping {wavfile}, processed file {save_path} already exists")
-                processed_files += 1
-                print(f"Processed: {processed_files}/{total_files}")
-                continue
+            # Assume original file is named like "0.wav", "1.wav", etc., and check for corresponding processed file
             try:
+                # Extract the index from the filename (e.g., "1.wav" -> "1")
+                file_index = wavfile.split('.')[0]
+                save_path = parent_dir + speaker + "/" + f"processed_{file_index}.wav"
+                # Skip if processed file already exists
+                if os.path.exists(save_path):
+                    print(f"Skipping {wavfile}, processed file {save_path} already exists")
+                    processed_files += 1
+                    print(f"Processed: {processed_files}/{total_files}")
+                    continue
                 wav, sr = torchaudio.load(parent_dir + speaker + "/" + wavfile, frame_offset=0, num_frames=-1, normalize=True,
                                           channels_first=True)
                 wav = wav.mean(dim=0).unsqueeze(0)
