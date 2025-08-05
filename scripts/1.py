@@ -9,7 +9,7 @@ import json
 lang2token = {
     'zh': "[ZH]",
     'ja': "[JA]",
-    "en": "[EN]",
+    'en': "[EN]",
 }
 
 def load_processed_files(output_file):
@@ -23,24 +23,27 @@ def load_processed_files(output_file):
                     processed_files.add(parts[0])
     return processed_files
 
-def transcribe_one(audio_path, model):
+def transcribe_one(audio_path, model, language=None):
     """Transcribe a single audio file using Whisper."""
     try:
         audio = whisper.load_audio(audio_path)
         audio = whisper.pad_or_trim(audio)
         mel = whisper.log_mel_spectrogram(audio).to(model.device)
-        _, probs = model.detect_language(mel)
-        lang = max(probs, key=probs.get)
-        print(f"Detected language for {audio_path}: {lang}")
-        options = whisper.DecodingOptions(beam_size=5)
+        if language:
+            options = whisper.DecodingOptions(language=language, beam_size=5)
+        else:
+            _, probs = model.detect_language(mel)
+            language = max(probs, key=probs.get)
+            options = whisper.DecodingOptions(beam_size=5)
+        print(f"Detected/Used language for {audio_path}: {language}")
         result = whisper.decode(model, mel, options)
         print(f"Transcription: {result.text}")
-        return lang, result.text
+        return language, result.text
     except Exception as e:
         print(f"Error transcribing {audio_path}: {e}", file=sys.stderr)
         return None, None
 
-def process_wav_file(wav_path, save_path, model, target_sr):
+def process_wav_file(wav_path, save_path, model, target_sr, language=None):
     """Process a WAV file and return the annotated transcription."""
     try:
         wav, sr = torchaudio.load(wav_path)
@@ -52,13 +55,13 @@ def process_wav_file(wav_path, save_path, model, target_sr):
             print(f"{wav_path} too long ({duration:.2f}s > 20.0s), ignoring")
             return None
         torchaudio.save(save_path, wav, target_sr, channels_first=True)
-        lang, text = transcribe_one(save_path, model)
+        lang, text = transcribe_one(save_path, model, language)
         if lang is None or text is None:
             return None
         if lang not in lang2token:
             print(f"{lang} not supported for {wav_path}, ignoring")
             return None
-        annotated_text = lang2token[lang] + text + lang2token[lang] + "\n"
+        annotated_text = f"{lang2token[lang]}{text}{lang2token[lang]}\n"
         return annotated_text
     except Exception as e:
         print(f"Error processing {wav_path}: {e}", file=sys.stderr)
@@ -69,19 +72,33 @@ def main(args):
     assert torch.cuda.is_available(), "Please enable GPU to run Whisper!"
     model = whisper.load_model(args.whisper_size)
 
-    # Load target sampling rate from config
-    with open(args.config_file, 'r', encoding='utf-8') as f:
-        hps = json.load(f)
-    target_sr = hps['data']['sampling_rate']
+    # Set default values if not provided
+    input_dir = args.input_dir or "./custom_character_voice"
+    output_file = args.output_file or "./short_character_anno.txt"
+    config_file = args.config_file or "./configs/finetune_speaker.json"
+
+    # Load target sampling rate from config if provided
+    target_sr = 16000  # Default sampling rate
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                hps = json.load(f)
+            target_sr = hps.get('data', {}).get('sampling_rate', target_sr)
+        except Exception as e:
+            print(f"Error loading config file {config_file}: {e}, using default sampling rate {target_sr}", file=sys.stderr)
 
     # Load already processed files
-    processed_files = load_processed_files(args.output_file)
+    processed_files = load_processed_files(output_file)
 
-    parent_dir = args.input_dir
-    speaker_names = [d for d in os.listdir(parent_dir) if os.path.isdir(os.path.join(parent_dir, d))]
+    # Check if input directory exists
+    if not os.path.exists(input_dir):
+        print(f"Error: Input directory {input_dir} does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+    speaker_names = [d for d in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, d))]
 
     for speaker in speaker_names:
-        speaker_dir = os.path.join(parent_dir, speaker)
+        speaker_dir = os.path.join(input_dir, speaker)
         # Only process original WAV files (exclude processed ones)
         wav_files = [f for f in os.listdir(speaker_dir) 
                      if f.endswith('.wav') and not f.startswith('processed_')]
@@ -95,10 +112,10 @@ def main(args):
                 print(f"Skipping already processed file: {save_path}")
                 continue
 
-            annotated_text = process_wav_file(wav_path, save_path, model, target_sr)
+            annotated_text = process_wav_file(wav_path, save_path, model, target_sr, args.languages)
             if annotated_text:
                 # Append to output file immediately
-                with open(args.output_file, 'a', encoding='utf-8') as f:
+                with open(output_file, 'a', encoding='utf-8') as f:
                     f.write(f"{save_path}|{speaker}|{annotated_text}")
                 print(f"Processed: {save_path}")
             else:
@@ -106,15 +123,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio file processing script with breakpoint continuation")
-    parser.add_argument("--input_dir", required=True, help="Input audio directory")
-    parser.add_argument("--output_file", required=True, help="Output transcription file")
-    parser.add_argument("--config_file", required=True, help="Path to config file")
-    parser.add_argument("--whisper_size", default="medium", help="Whisper model size")
+    parser.add_argument("--input_dir", help="Input audio directory (default: ./custom_character_voice)")
+    parser.add_argument("--output_file", help="Output transcription file (default: ./short_character_anno.txt)")
+    parser.add_argument("--config_file", help="Path to config file (default: ./configs/finetune_speaker.json)")
+    parser.add_argument("--whisper_size", default="medium", help="Whisper model size (default: medium)")
+    parser.add_argument("--languages", default=None, help="Language for transcription (e.g., ja, zh, en)")
     parser.add_argument("--force_process", action="store_true", help="Force reprocess all files")
     args = parser.parse_args()
-
-    if not os.path.exists(args.input_dir):
-        print(f"Error: Input directory {args.input_dir} does not exist.", file=sys.stderr)
-        sys.exit(1)
 
     main(args)
